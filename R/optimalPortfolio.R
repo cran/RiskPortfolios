@@ -7,7 +7,7 @@
 #' \itemize{
 #' \item \code{type} method used to compute the
 #' optimal portfolio, among \code{'mv'}, \code{'minvol'}, \code{'invvol'},
-#' \code{'erc'}, \code{'maxdiv'} and \code{'riskeff'} where: 
+#' \code{'erc'}, \code{'maxdiv'}, \code{'riskeff'} and \code{'maxdec'} where: 
 #' 
 #' \code{'mv'} is used to compute the weights of the mean-variance portfolio. The weights are
 #' computed following this equation: \deqn{w = \frac{1}{\gamma} \Sigma^{-1}
@@ -36,9 +36,13 @@
 #' is one if the semi-deviation of stock \eqn{i} belongs to decile
 #' \eqn{j},\eqn{\xi = (\xi_1,\ldots,\xi_{10})'}. 
 #' 
+#' \code{'maxdec'} is used to compute the weights of the maximum-decorrelation
+#' portfolio: \deqn{w = {argmax}\left\{ 1 -  \sqrt{w' \Sigma w} \right\}
+#' }{w = argmax {1- \sqrt(w' R w)}} where \eqn{R} is the correlation matrix. 
+#' 
 #' Default: \code{type = 'mv'}.
 #' 
-#' These portfolios are summarized in Ardia and Boudt (2015) and Ardia et al. (2016). Below we list the various references.
+#' These portfolios are summarized in Ardia and Boudt (2015) and Ardia et al. (2017). Below we list the various references.
 #' 
 #' \item \code{constraint} constraint used for the optimization, among
 #' \code{'none'}, \code{'lo'}, \code{'gross'} and \code{'user'}, where: \code{'none'} is used to 
@@ -80,10 +84,10 @@
 #' \emph{Journal of Portfolio Management} \bold{41}(4), pp.66-81. 
 #' \doi{10.3905/jpm.2015.41.4.068}
 #' 
-#' Ardia, D., Bolliger, G., Boudt, K., Gagnon-Fleury, J.-P. (2016).  
-#' \emph{The Impact of covariance misspecification in risk-based portfolios}.  
-#' Working paper. 
-#' \url{https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2650644}
+#' Ardia, D., Bolliger, G., Boudt, K., Gagnon-Fleury, J.-P. (2017).  
+#' The Impact of covariance misspecification in risk-based portfolios.  
+#' \emph{Annals of Operations Research} \bold{254}(1-2), pp.1-16. 
+#' \doi{10.1007/s10479-017-2474-7}
 #' 
 #' Choueifaty, Y., Coignard, Y. (2008).  
 #' Toward maximum diversification.
@@ -105,10 +109,10 @@
 #' \emph{Review of Financial Studies} \bold{22}(5), pp.1915-1953. 
 #' \doi{10.1093/rfs/hhm075}
 #' 
-#' Fan, J., Zhang, J., Yu, K. (2009).  
-#' \emph{Asset allocation and risk assessment with gross exposure constraints for vast portfolios}.
-#' Working paper. 
-#' \url{https://papers.ssrn.com/sol3/papers.cfm?abstract_id=1307423}
+#' Fan, J., Zhang, J., Yu, K. (2012).  
+#' Vast portfolio selection with gross-exposure constraints.
+#' \emph{Journal of the American Statistical Association} \bold{107}(498), pp.592-606. 
+#' \url{10.1080/01621459.2012.68282}
 #' 
 #' Maillard, S., Roncalli, T., Teiletche, J. (2010).  
 #' The properties of equally weighted risk contribution portfolios.  
@@ -228,7 +232,20 @@
 #' # Risk-efficient portfolio with LB and UB constraints
 #' optimalPortfolio(Sigma = Sigma, semiDev = semiDev, 
 #'   control = list(type = 'riskeff', constraint = 'user', LB = rep(0.02, 10), UB = rep(0.8, 10)))
+#'   
+#' # Maximum decorrelation portfolio without constraint
+#' optimalPortfolio(Sigma = Sigma, 
+#'   control = list(type = 'maxdec'))
+#' 
+#' # Maximum decorrelation portoflio with the long-only constraint
+#' optimalPortfolio(Sigma = Sigma, 
+#'   control = list(type = 'maxdec', constraint = 'lo'))
+#'   
+#' # Maximum decorrelation portoflio with LB and UB constraints
+#' optimalPortfolio(Sigma = Sigma, 
+#'   control = list(type = 'maxdec', constraint = 'user', LB = rep(0.02, 10), UB = rep(0.8, 10)))
 #' @export
+#' @importFrom stats cov2cor
 optimalPortfolio <- function(Sigma, mu = NULL, semiDev = NULL, control = list()) {
   
   if (missing(Sigma)) {
@@ -256,6 +273,8 @@ optimalPortfolio <- function(Sigma, mu = NULL, semiDev = NULL, control = list())
     w <- .riskeffPortfolio(Sigma = Sigma, semiDev = semiDev, control = control)
   } else if (ctr$type[1] == "invvol") {
     w <- .invvolPortfolio(Sigma = Sigma, control = control)
+  } else if (ctr$type[1] == "maxdec") {
+    w <- .maxdecPortfolio(Sigma = Sigma, control = control)
   } else {
     stop("control$type is not well defined")
   }
@@ -277,7 +296,7 @@ optimalPortfolio <- function(Sigma, mu = NULL, semiDev = NULL, control = list())
   }
   nam <- names(control)
   ## type
-  type <- c("mv", "minvol", "erc", "maxdiv", "riskeff", "invvol")
+  type <- c("mv", "minvol", "erc", "maxdiv", "riskeff", "invvol", "maxdec")
   if (!("type" %in% nam) || is.null(control$type)) {
     control$type <- type
   }
@@ -383,8 +402,13 @@ optimalPortfolio <- function(Sigma, mu = NULL, semiDev = NULL, control = list())
         as.numeric(crossprod(w, Sigmaw))
       return(opt)
     }
+    .gradmeanvar <- function(w)
+    {
+      g <- -mu + ctr$gamma[1] * crossprod(Sigma, w)
+    } 
     ..grossContraint = function(w) .grossConstraint(w, ctr$gross.c)
-    w <- nloptr::slsqp(x0 = ctr$w0, fn = .meanvar, 
+    w <- nloptr::slsqp(x0 = ctr$w0, fn = .meanvar,
+                       gr = .gradmeanvar,
                        hin = ..grossContraint, 
                        heq = .eqConstraint, 
                        lower = ctr$LB,
@@ -424,9 +448,16 @@ optimalPortfolio <- function(Sigma, mu = NULL, semiDev = NULL, control = list())
       Sigmaw <- crossprod(Sigma, w)
       v <- as.numeric(crossprod(w, Sigmaw))
       return(v)
-    }
+    }    
+    .gradminvol <- function(w)
+    {
+      Sigmaw <- crossprod(Sigma, w)
+      g <- 2 * Sigmaw 
+#       g <- Sigmaw / sqrt(as.numeric(crossprod(w, Sigmaw)))
+    }    
     ..grossContraint = function(w) .grossConstraint(w, ctr$gross.c)
-    w <- nloptr::slsqp(x0 = ctr$w0, fn = .minvol, 
+    w <- nloptr::slsqp(x0 = ctr$w0, fn = .minvol,
+                       gr = .gradminvol,
                        hin = ..grossContraint, 
                        heq = .eqConstraint,
                        lower = ctr$LB,
@@ -469,12 +500,22 @@ optimalPortfolio <- function(Sigma, mu = NULL, semiDev = NULL, control = list())
     return(d)
   }
   
+  .gradERC <- function(w)
+  {
+    Sigmaw <- crossprod(Sigma, w)
+    pRC <- (w * Sigmaw) / as.numeric(crossprod(w, Sigmaw))
+    sig_p <- as.numeric(sqrt(crossprod(w, Sigmaw)))
+    f <- pRC - 1/n
+    g <- 2 * (sig_p^2 * (crossprod(Sigma, (w * f)) + f * Sigmaw) - 2 * Sigmaw * as.numeric(crossprod(w * f, Sigmaw))) / sig_p^4
+  }
+  
   ..grossContraint = NULL
   if (ctr$constraint[1] == "gross") {
     ..grossContraint = function(w) .grossConstraint(w, ctr$gross.c)
   }
   
   w <- nloptr::slsqp(x0 = ctr$w0, fn = .pRC, 
+                     gr = .gradERC,
                      hin = ..grossContraint,
                      heq = .eqConstraint, 
                      lower = ctr$LB, 
@@ -501,12 +542,22 @@ optimalPortfolio <- function(Sigma, mu = NULL, semiDev = NULL, control = list())
     return(divRatio)
   }
   
+  .gradMaxDiv <- function(w)
+  {
+    Sigmaw <- crossprod(Sigma, w)
+    sig = sqrt(diag(Sigma))
+    sig_p <- as.numeric(sqrt(crossprod(w, Sigmaw)))
+    g <- (sig_p * sig - as.numeric(crossprod(w, sig)) * Sigmaw / sig_p) / sig_p^2
+    g <- - g
+  }
+  
   ..grossContraint = NULL
   if (ctr$constraint[1] == "gross") {
     ..grossContraint = function(w) .grossConstraint(w, ctr$gross.c)
   }
   
   w <- nloptr::slsqp(x0 = ctr$w0, fn = .divRatio, 
+                     gr = .gradMaxDiv,
                      hin = ..grossContraint,
                      heq = .eqConstraint, 
                      lower = ctr$LB, 
@@ -560,18 +611,75 @@ optimalPortfolio <- function(Sigma, mu = NULL, semiDev = NULL, control = list())
     return(d)
   }
   
+  .gradRiskEff <- function(w)
+  {
+    Sigmaw <- crossprod(Sigma, w)
+    sig_p <- as.numeric(sqrt(crossprod(w, Sigmaw)))
+    g <- (sig_p * Jepsilon - as.numeric(crossprod(w, Jepsilon)) * Sigmaw / sig_p) / sig_p^2
+    g <- - g
+  }
+  
   ..grossContraint = NULL
   if (ctr$constraint[1] == "gross") {
     ..grossContraint = function(w) .grossConstraint(w, ctr$gross.c)
   }
   
-  w <- nloptr::slsqp(x0 = ctr$w0, fn = .distRiskEff, 
+  w <- nloptr::slsqp(x0 = ctr$w0, fn = .distRiskEff,
+                     gr = .gradRiskEff,
                      hin = ..grossContraint,
                      heq = .eqConstraint, 
                      lower = LB, 
                      upper = UB, 
                      nl.info = FALSE, control = ctr$ctr.slsqp)$par
   
+  w[w<=ctr$LB] <- ctr$LB[w<=ctr$LB]
+  w[w>=ctr$UB] <- ctr$UB[w>=ctr$UB]
+  w <- w / sum(w)
+  return(w)
+}
+
+.maxdecPortfolio <- function(Sigma, control = list()) {
+  ## Compute the weight of the maximum decorrelation portfolio INPUTs Sigma :
+  ## matrix (N x N) covariance matrix control : list of control parameters
+  ## OUTPUTs w : vector (N x 1) weight
+  n <- dim(Sigma)[1]
+  ctr <- .ctrPortfolio(n, control)
+  Rho <- stats::cov2cor(Sigma) 
+  if (ctr$constraint[1] == "none") {
+    tmp <- solve(Sigma, rep(1, n))
+    w <- tmp/sum(tmp)
+  } else if (ctr$constraint[1] == "lo" || ctr$constraint[1] == "user") {
+    dvec <- rep(0, n)
+    Amat <- cbind(rep(1, n), diag(n))
+    bvec <- c(1, ctr$LB)
+    if (ctr$constraint[1] == "user") {
+      Amat <- cbind(Amat, -diag(n))
+      bvec <- c(bvec, -ctr$UB)
+    }
+    w <- quadprog::solve.QP(Dmat = Rho, dvec = dvec, Amat = Amat, 
+                            bvec = bvec, meq = 1)$solution
+  } else if (ctr$constraint[1] == "gross") {
+    .maxdec <- function(w) {
+      Rhow <- crossprod(Rho, w)
+      v <- as.numeric(crossprod(w, Rhow)) # equivalent to: v <- sqrt(as.numeric(crossprod(w, Rhow)))
+      return(v)
+    }    
+    .gradmaxdec <- function(w)
+    {
+      Rhow <- crossprod(Rho, w)
+      g <- 2 * Rhow
+    }    
+    ..grossContraint = function(w) .grossConstraint(w, ctr$gross.c)
+    w <- nloptr::slsqp(x0 = ctr$w0, fn = .maxdec,
+                       gr = .gradmaxdec,
+                       hin = ..grossContraint, 
+                       heq = .eqConstraint,
+                       lower = ctr$LB,
+                       upper = ctr$UB,
+                       nl.info = FALSE,  control = ctr$ctr.slsqp)$par
+  } else {
+    # spotted in controls
+  }
   w[w<=ctr$LB] <- ctr$LB[w<=ctr$LB]
   w[w>=ctr$UB] <- ctr$UB[w>=ctr$UB]
   w <- w / sum(w)
